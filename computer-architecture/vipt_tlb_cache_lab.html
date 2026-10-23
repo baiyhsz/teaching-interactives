@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>VIPT Cache</title>
+<style>
+:root{font-family:"Segoe UI","Microsoft YaHei","PingFang SC",Arial,sans-serif;color:#142b45;background:#fff}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden}
+body{font-size:18px}
+#root{height:100vh;display:grid;grid-template-rows:auto auto 1fr;gap:8px;padding:12px 14px 10px}
+header{display:flex;align-items:baseline;gap:18px;white-space:nowrap;min-height:33px}
+h1{font-size:29px;margin:0;font-weight:800;line-height:1.2}
+.subtitle{color:#5d6f81;font-size:18px}
+.tools{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:71px}
+.modes{display:flex;gap:8px;flex:1 1 66%;min-width:0}
+.mode{border:2px solid #c5d3e3;background:#fff;padding:8px 10px;min-width:0;flex:1;min-height:66px;text-align:left;cursor:pointer;font-weight:800;font-size:19px;border-radius:5px;color:#19324c}
+.mode small{display:block;color:#637589;font-size:15px;font-weight:500;margin-top:3px}
+.mode.active{background:#e9f2ff;border-color:#2f70ce}
+.actions{display:flex;gap:8px;align-items:center;flex-shrink:0}
+.btn{border:2px solid #b6c7db;background:#fff;color:#27496b;padding:10px 14px;min-height:50px;border-radius:6px;cursor:pointer;font-weight:800;font-size:19px}
+.btn:disabled{cursor:default;opacity:.45}
+.btn.primary{background:#2869be;color:#fff;border-color:#2869be}
+main{min-height:0;display:flex;flex-direction:column;border:1.5px solid #d4deea;border-radius:4px;padding:9px;background:#fff}
+.stageIntro{display:flex;align-items:baseline;justify-content:space-between;gap:18px;padding:2px 10px 7px;min-height:37px}
+#stepText{font-size:20px;font-weight:800;color:#173250}
+#tinyNote{font-size:16px;color:#526a81;text-align:right}
+#scene{display:block;flex:1;min-height:0;width:100%;height:100%;background:#fff}
+@media(max-width:1100px){.subtitle{font-size:15px}.mode{font-size:18px;padding:7px}.btn{font-size:16px;padding:8px}.mode small{font-size:13px}}
+</style>
+</head>
+<body>
+<div id="root">
+ <header><h1>VIPT Cache</h1><span class="subtitle">虚拟地址索引与物理标记</span></header>
+ <div class="tools">
+  <div class="modes">
+   <button class="mode" data-mode="A" aria-pressed="false">A &nbsp; L + b &lt; k<small>1KB · 16 Sets · Index 4 bits</small></button>
+   <button class="mode active" data-mode="B" aria-pressed="true">B &nbsp; L + b = k<small>4KB · 64 Sets · Index 6 bits</small></button>
+   <button class="mode" data-mode="C" aria-pressed="false">C &nbsp; L + b &gt; k<small>16KB · 256 Sets · Index 8 bits</small></button>
+   <button class="mode" data-mode="D" aria-pressed="false">D &nbsp; Associativity<small>32KB · 8-way · a = 3</small></button>
+  </div>
+  <div class="actions">
+   <button class="btn" id="prevBtn">上一步</button>
+   <button class="btn primary" id="nextBtn">下一步</button>
+   <button class="btn" id="resetBtn">重置</button>
+   <button class="btn" id="fitBtn">适应窗口</button>
+  </div>
+ </div>
+ <main>
+  <div class="stageIntro"><span id="stepText"></span><span id="tinyNote"></span></div>
+  <svg id="scene" viewBox="0 0 1500 682" preserveAspectRatio="xMidYMid meet" aria-label="VIPT 地址转换与 Cache 映射的分步动画"></svg>
+ </main>
+</div>
+<script>
+
+(()=>{
+const settings={
+ A:{L:4,sets:16,cap:'1KB',formula:'L+b = 10 < k = 12',status:'Page Offset 高 2 bits 属于 Physical Tag。'},
+ B:{L:6,sets:64,cap:'4KB',formula:'L+b = 12 = k',status:'Index + Block Offset 刚好覆盖 Page Offset。'},
+ C:{L:8,sets:256,cap:'16KB',formula:'L+b = 14 > k = 12',status:'Index 高 2 bits 来自 VPN；与 PPN 低 2 bits 不同。'},
+ D:{L:6,sets:64,cap:'32KB',formula:'8-way: 2³ = 8 Ways',status:'保持总容量32KB，用8个Ways替代多出的3个Index bits。'}
+};
+let mode='B',phase=0;
+const $=id=>document.getElementById(id);
+const hex=(n,d=2)=>'0x'+n.toString(16).toUpperCase().padStart(d,'0');
+const c=()=>settings[mode];
+const idx=va=>(va>>>6)&((1<<c().L)-1);
+const pa=0xA000,va1=0x1000,va2=0x2000;
+const tag=()=>mode==='C' ? (pa>>>12) : (pa>>>(c().L+6));
+const actualTagBits=()=>mode==='C'?20:32-c().L-6;
+const physicalIdx=()=>(pa>>>6)&((1<<c().L)-1);
+function t(x,y,s,size=20,color='#17283b',weight=400,anchor='start',other=''){
+ return `<text x="${x}" y="${y}" font-size="${size}" fill="${color}" font-weight="${weight}" text-anchor="${anchor}" ${other}>${s}</text>`;
+}
+function r(x,y,w,h,fill,stroke='#62778c',sw=1.5,extra=''){
+ return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" ${extra}/>`;
+}
+function path(d,color,width=2.5,extra=''){
+ return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round" ${extra}/>`;
+}
+function arrow(d,color,width=3){return path(d,color,width,'marker-end="url(#arr'+(color==='#2263b1'?'B':color==='#8656b3'?'P':'G')+')"');}
+function segment(x,y,w,h,fill,label,sub,stroke='#8799aa',accent=false){
+ return r(x,y,w,h,fill,accent?'#d79316':stroke,accent?3:1.3)+
+ t(x+w/2,y+19,label,w<95?17:21,'#1e3045',700,'middle')+
+ t(x+w/2,y+43,sub,16,'#334b60',500,'middle');
+}
+function rowsFor(){
+ if(mode==='C')return [0,1,'…',64,'…',128,'…',255];
+ if(mode==='A')return [0,1,2,'…',13,14,15];
+ return [0,1,2,'…',61,62,63];
+}
+function drawD(){
+ const phaseMax=4;
+ const blue='#2263b1',purple='#8656b3',green='#207a54',red='#b63e46',orange='#c67910',gold='#d28b12';
+ // 4KB page / 64B line / 32KB capacity: DM 512x1 versus 8-way 64x8.
+ // Address-bit positions are geometrically aligned in all three rows.
+ const x=180,w=680,bw=w/32, low3=x+17*bw,pg=x+20*bw,indexEnd=x+26*bw;
+ const onDM=phase>=1,onSA=phase>=2,onPPN=phase>=3,onWays=phase>=4;
+ let o=`<defs>
+  <marker id="arrB" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7z" fill="${blue}"/></marker>
+  <marker id="arrP" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7z" fill="${purple}"/></marker>
+  <marker id="arrG" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7z" fill="${green}"/></marker>
+  <marker id="arrO" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7z" fill="${orange}"/></marker>
+ </defs>`;
+ o+=r(12,12,885,652,'#fff','#c7d1de',2)+r(910,12,577,652,'#fff','#c7d1de',2);
+ o+=t(35,40,'D · 32KB 不变：用 Ways 换 Index 位数',25,'#142d4c',700);
+ o+=t(35,72,'4KB Page：VPN 20 bits，Page Offset 12 bits',18,'#354b63',650);
+ o+=t(x,85,'31',15,'#718398')+t(low3,85,'15 | 14',15,'#718398',500,'middle')+t(pg,85,'12 | 11',15,'#718398',500,'middle')+t(x+w,85,'0',15,'#718398',400,'end');
+ // Top: source VA. Orange precisely tracks its low 3 VPN bits, [14:12].
+ o+=segment(x,96,low3-x,50,'#d8e7fb','VPN 高17位','17 bits');
+ o+=r(low3,96,pg-low3,50,'#ffebcf',orange,onDM?3.3:2);
+ o+=t((low3+pg)/2,116,'a',19,orange,800,'middle');
+ o+=t((low3+pg)/2,135,'VPN低3',13,orange,800,'middle');
+ o+=segment(pg,96,x+w-pg,50,'#cce9da','Page Offset','12 bits');
+ // Boundary guide. Unlike orange line below, this only aligns bit positions.
+ o+=path(`M${pg} 86 V353`,'#507ea8',1.6,'stroke-dasharray="5 5"');
+ o+=t(pg+7,161,'Page Offset 边界',14,'#507ea8',550);
+ // Direct-mapped organization: the same three VA bits form upper Index bits.
+ o+=t(35,178,'① Direct-mapped · 512 Sets × 1 Way × 64B = 32KB',20,onDM?red:'#354b63',700);
+ o+=segment(x,187,low3-x,51,'#e9eef4','其余 VPN','17 bits');
+ o+=r(low3,187,pg-low3,51,'#ffebcf',orange,onDM?3.7:2);
+ o+=t((low3+pg)/2,208,'a',19,orange,800,'middle');
+ o+=t((low3+pg)/2,227,'Index高3',12,orange,800,'middle');
+ o+=segment(pg,187,indexEnd-pg,51,'#ffe4b1','Index 低6位','VA[11:6]');
+ o+=segment(indexEnd,187,x+w-indexEnd,51,'#d1ebde','Offset','6 bits');
+ if(onDM){
+   o+=path(`M${(low3+pg)/2} 147 V186`,orange,3.1,'stroke-dasharray="5 4"');
+   o+=r(low3-2,185,indexEnd-low3+4,55,'none',orange,3.2);
+ }
+ o+=t(191,263,'Index = VA[14:6]（9 bits）：橙色的 3 bits 来自 VPN',18,onDM?red:'#526b85',700);
+ // 8-way: same bit positions remain part of VPN; green index uses only offset bits.
+ o+=t(35,305,'② 8-way · 64 Sets × 8 Ways × 64B = 32KB',20,onSA?green:'#354b63',700);
+ o+=segment(x,315,low3-x,51,'#d8e7fb','VPN 高17位','17 bits');
+ o+=r(low3,315,pg-low3,51,'#ede4f8',purple,onSA?3.7:2);
+ o+=t((low3+pg)/2,336,'a',19,purple,800,'middle');
+ o+=t((low3+pg)/2,355,'VPN',15,purple,800,'middle');
+ o+=segment(pg,315,indexEnd-pg,51,'#ffe4b1','Index','VA[11:6]',gold,onSA);
+ o+=segment(indexEnd,315,x+w-indexEnd,51,'#d1ebde','Offset','6 bits');
+ if(onSA){
+   o+=r(pg-1,313,indexEnd-pg+2,55,'none',green,3.5);
+   o+=path(`M${(low3+pg)/2} 239 V312`,purple,2.7,'stroke-dasharray="5 5"');
+   o+=t(low3-13,289,'原来的 3 bits 不再选 Set',16,purple,750,'end');
+ }
+ o+=t(191,393,'a = log₂(Ways) = 3：图中 VA[14:12]；8-way 不按 a 位选 Way',17,onSA?green:'#526b85',750);
+ // Translation lane: 20-bit VPN translated to full 20-bit PPN. The low 3 may change value.
+ o+=t(35,433,'③ 完整 VPN 进入 TLB，返回完整 PPN 作 Physical Tag',19,onPPN?blue:'#354b63',700);
+ o+=r(180,447,208,56,'#d8e7fb',onPPN?blue:'#869db1',onPPN?3:1.5);
+ o+=t(283,469,'VPN[19:0]',19,'#203951',700,'middle')+t(283,492,'完整 20 bits',16,'#334b60',600,'middle');
+ o+=arrow('M393 475 H449',blue,3);
+ o+=r(455,447,105,56,onPPN?'#e9f2ff':'#f9fbfe',onPPN?blue:'#869db1',onPPN?3:1.5);
+ o+=t(507,482,'TLB',23,blue,700,'middle');
+ o+=arrow('M566 475 H616',blue,3);
+ const px=621,pw=246,lowW=pw*3/20;
+ o+=r(px,447,pw-lowW,56,'#d8e7fb',onPPN?blue:'#869db1',onPPN?3:1.5);
+ o+=r(px+pw-lowW,447,lowW,56,'#e9dff8',onPPN?purple:'#869db1',onPPN?3:1.5);
+ o+=t(px+(pw-lowW)/2,470,'PPN 高17',18,'#203951',700,'middle');
+ o+=t(px+(pw-lowW)/2,491,'17 bits',15,'#334b60',600,'middle');
+ o+=t(px+pw-lowW/2,470,'低3',14,purple,800,'middle');
+ o+=t(px+pw-lowW/2,489,'保留',13,purple,750,'middle');
+ // Fixed lower summary aligned with C's provenance message, but D-specific values.
+ o+=r(35,521,840,133,onWays?'#f0fbf4':onSA?'#f7fbf9':'#f8fafc',onWays?green:'#c1d2df',1.7,'rx="3"');
+ o+=r(51,533,98,30,'#fff0d6',orange,1.8,'rx="3"')+t(100,553,'VA[14:12]',16,orange,800,'middle');
+ o+=arrow('M155 548 H190',orange,2.7);
+ o+=t(201,553,'Direct-mapped 的 Index 高3位',18,orange,750);
+ o+=r(51,572,98,30,'#edf8f3',green,1.8,'rx="3"')+t(100,592,'VA[11:6]',16,green,800,'middle');
+ o+=arrow('M155 587 H190',green,2.7);
+ o+=t(201,592,'8-way 选 Set 的完整 6-bit Index',18,green,750);
+ o+=r(51,611,98,30,'#e9dff8',purple,1.8,'rx="3"')+t(100,631,'PPN',17,purple,800,'middle');
+ o+=arrow('M155 626 H190',purple,2.7);
+ o+=t(201,631,'完整 PPN 作 Tag：低3位不丢，也不要求等于 VPN 原来的低3位',18,purple,750);
+ // Right pane: same capacity, two virtual indices versus one set and 8 ways.
+ o+=t(933,40,'同一物理块：Set 如何变化？',25,'#142d4c',700);
+ const badge=(bx,by,fill,stroke,left,right)=>r(bx,by,251,40,fill,stroke,1.8,'rx="3"')+t(bx+13,by+26,left,18,stroke,700)+t(bx+238,by+26,right,18,stroke,700,'end');
+ o+=t(935,76,'Direct-mapped：512 Sets × 1 Way',20,onDM?red:'#354b63',700);
+ o+=badge(936,89,onDM?'#fff0f0':'#f6f9fd',onDM?red:'#8296ab','VA1 · 0x1000','Set 0x40');
+ o+=badge(1193,89,onDM?'#fff0f0':'#f6f9fd',onDM?red:'#8296ab','VA2 · 0x2000','Set 0x80');
+ o+=t(945,151,onDM?'Aliasing':'9-bit Index：VA[14:6]',17,onDM?red:'#5b6c7e',700);
+ o+=path('M1190 163 V180',onSA?green:'#bcc8d3',2.8);
+ o+=t(935,206,'8-way：64 Sets × 8 Ways',20,onSA?green:'#354b63',700);
+ o+=badge(936,219,onSA?'#edf8f3':'#f6f9fd',onSA?green:'#8296ab','VA1 · 0x1000','Set 0x00');
+ o+=badge(1193,219,onSA?'#edf8f3':'#f6f9fd',onSA?green:'#8296ab','VA2 · 0x2000','Set 0x00');
+ o+=t(945,281,onSA?'相同 Index：同时查看 Set 0 的所有 8 个 Ways':'6-bit Index：VA[11:6]',17,onSA?green:'#5b6c7e',700);
+ const tx=931,ty=317,labelW=66,cw=58,headH=43,firstH=64,rh=36, total=labelW+8*cw;
+ const ySet0=ty+headH,ySet1=ySet0+firstH,yDots=ySet1+rh,ySet63=yDots+rh,end=ySet63+rh;
+ o+=r(tx,ty,total,end-ty,'#fff','#53677b',1.7);
+ o+=r(tx,ty,total,headH,'#ebf1f8','#53677b',1.0);
+ o+=t(tx+labelW/2,ty+28,'Set',17,'#243b51',700,'middle');
+ for(let way=0;way<8;way++){
+   const xx=tx+labelW+way*cw;
+   o+=path(`M${xx} ${ty} V${end}`,'#a7b7c4',1.0);
+   o+=t(xx+cw/2,ty+28,'W'+way,16,'#243b51',700,'middle');
+ }
+ const rowLabel=(y,h,label,fill)=>{
+   let v=r(tx,y,total,h,fill,'#b6c4d1',.9);
+   v+=t(tx+labelW/2,y+h/2+5,label,17,'#2a4257',700,'middle');
+   return v;
+ };
+ o+=rowLabel(ySet0,firstH,'0x00',onSA?'#edf8f3':'#fbfcfd');
+ o+=rowLabel(ySet1,rh,'0x01','#f9fafc');
+ o+=rowLabel(yDots,rh,'…','#fff');
+ o+=rowLabel(ySet63,rh,'0x3F','#f9fafc');
+ const exampleTags=['A1','B4','23','0A','54','C2','6F','11'];
+ for(let way=0;way<8;way++){
+   const xx=tx+labelW+way*cw,match=way===3;
+   // The example tags are the same physical tags whichever VA accesses the shared page.
+   if(onWays&&match)o+=r(xx+1,ySet0+1,cw-2,firstH-2,'#caefd9',green,2.8,'rx="2"');
+   o+=t(xx+cw/2,ySet0+26,onPPN?exampleTags[way]:'—',18,onWays&&match?green:'#35495f',onWays&&match?800:650,'middle');
+   if(onWays)o+=t(xx+cw/2,ySet0+52,match?'=':'≠',23,match?green:red,850,'middle');
+   if(onSA&&!onWays)o+=t(xx+cw/2,ySet0+51,'·',18,'#9aabbc',600,'middle');
+   o+=t(xx+cw/2,yDots+23,'…',16,'#8793a0',450,'middle');
+ }
+ o+=t(941,561,onPPN?'PPN = 0x0A（20 bits）':'TLB 输出 PPN · 20 bits',19,onPPN?blue:'#526b85',700);
+ if(onWays){
+   o+=arrow('M1143 555 H1176',green,3);
+   o+=t(1187,561,'8 个 Tags 并行比较',18,green,700);
+   o+=r(939,581,510,67,'#edf8f3',green,2,'rx="3"');
+   o+=t(1193,604,'8 个比较器：7 个不匹配，Way 3 匹配',19,green,800,'middle');
+   o+=t(1193,631,'VA1 / VA2 都命中 Way 3；不是由 a 位选择',16,'#28664e',700,'middle');
+ }else{
+   o+=r(939,581,510,67,'#f8fafc','#c6d3e0',1.5,'rx="3"');
+   o+=t(1193,605,'所有 Ways 同时使用 VA[11:6] 选 Set',18,'#526b85',700,'middle');
+   o+=t(1193,630,'等 PPN 返回后，才知道哪个 Tag 命中',16,'#526b85',600,'middle');
+ }
+ $('scene').innerHTML=o;
+ document.querySelectorAll('[data-mode]').forEach(b=>{b.classList.toggle('active',b.dataset.mode===mode);b.setAttribute('aria-pressed',String(b.dataset.mode===mode));});
+ $('prevBtn').disabled=phase===0; $('nextBtn').disabled=phase===phaseMax;
+ $('nextBtn').textContent=phase===phaseMax?'已完成':'下一步';
+ const titles=[
+  '同一 32KB Cache：先观察 Page Offset 的固定边界',
+  'Direct-mapped：Index 有 9 bits，其中高 3 bits 来自 VPN',
+  '8-way：Index 缩成 6 bits；原来那 3 bits 仍属于 VPN',
+  'TLB 仍转换完整 VPN，输出完整 PPN 作为 Physical Tag',
+  '同一 Set 的 8 个 Tags 并行比较，命中结果确定 Way'
+ ];
+ $('stepText').textContent=`${phase+1}/5  ${titles[phase]}`;
+ const notes=[
+  '橙色 VA[14:12]：原本要参与 Direct-mapped 的 Index。',
+  'VA[14:12] 是 Direct-mapped Index 高 3 位；可能产生 Aliasing。',
+  '绿色 VA[11:6] 是 8-way Index；a=3 只表示 8 Ways，不是地址位选择器。',
+  '紫色强调 PPN 低 3 位仍属于完整 Tag；TLB 翻译前后位值不必相同。',
+  '8 Ways 使用同一 Index；不由 a 的位值决定 Way 3，而由 Tag 比较命中。'
+ ];
+ $('tinyNote').textContent=notes[phase];
+}
+function draw(){
+ if(mode==='D'){drawD();return;}
+ const s=c(),L=s.L,begin=180,w=680,bit=w/32,pg=begin+20*bit,indexStart=begin+(26-L)*bit,offsetStart=begin+26*bit;
+ const id1=idx(va1),id2=idx(va2),same=id1===id2,tagHex=hex(tag(),mode==='C'?2:2);
+ const focus=phase>0,physical=phase>=2,loaded=phase>=3;
+ const blue='#2263b1',purple='#8656b3',gold='#d28b12',green='#207a54',red='#b63e46',violet='#8047a6';
+ const vaOrange='#c67910', paPurple='#7650b3';
+ let o=`<defs><marker id="arrB" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7z" fill="${blue}"/></marker><marker id="arrP" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7z" fill="${purple}"/></marker><marker id="arrG" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7z" fill="${green}"/></marker></defs>`;
+ // Whole plot modules
+ o+=r(12,12,885,652,'#fff','#c7d1de',2)+r(910,12,577,652,'#fff','#c7d1de',2);
+ o+=t(35,39,mode==='C'?'分页位段与 VIPT 的两路取位':'同一个 32-bit 地址的两种划分',26,'#142d4c',700);
+ o+=t(35,71,'分页系统',19,'#354b63',700);
+ o+=t(begin,81,'31',16,'#718398')+t(pg,81,'12 | 11',16,'#718398',400,'middle')+t(begin+w,81,'0',16,'#718398',400,'end');
+ // Page segmentation y=95
+ if(mode==='C'){
+   // Distinguish VPN low two bits of VA from PPN low two bits of PA.
+   // Same bit positions [13:12], but NOT necessarily the same bit values.
+   const x=pg-2*bit, mid=(x+pg)/2;
+   o+=segment(begin,96,x-begin,58,'#d8e7fb','VPN 高18位','18 bits');
+   o+=r(x,96,pg-x,58,'#fff0d6',vaOrange,focus?3.8:2.5);
+   o+=t(mid,119,'VPN',14,vaOrange,800,'middle');
+   o+=t(mid,141,'低2',15,vaOrange,800,'middle');
+ }else{
+   o+=segment(begin,96,pg-begin,58,'#d8e7fb','VPN','20 bits');
+ }
+ o+=segment(pg,96,begin+w-pg,58,'#cce9da','Page Offset','12 bits');
+ if(mode==='A' && focus){
+   o+=r(pg+1,96,2*bit-2,58,'rgba(171,105,209,.15)',violet,3);
+ }
+ o+=t(35,191,'VIPT 直接从 VA 选取的 Cache Index',19,'#354b63',700);
+ if(mode==='C')o+=t(847,191,'Index 高2位：VA1=01₂ / VA2=10₂',16,vaOrange,700,'end');
+ // Page boundary remains fixed in all steps; a dashed line is a position marker, not a bit-value transfer.
+ o+=path(`M${pg} 83 V490`,'#507ea8',1.6,'stroke-dasharray="5 5"');
+ o+=t(pg+9,170,'Page Offset 分界',15,'#507ea8',500);
+ // Cache-selection projection on same VA bits y=208
+ o+=segment(begin,208,indexStart-begin,58,'#e9eef4','高位','不用于 Index');
+ if(mode==='C'){
+   // VA[13:12] selects Set (high two of the 8-bit virtual index).
+   const mid=(indexStart+pg)/2;
+   o+=r(indexStart,208,pg-indexStart,58,'#fff0d6',vaOrange,focus?3.8:2.5);
+   o+=t(mid,231,'高2',15,vaOrange,800,'middle');
+   o+=t(mid,252,'VA',15,vaOrange,800,'middle');
+   // VA[11:6] supplies the remaining six virtual index bits.
+   o+=segment(pg,208,offsetStart-pg,58,'#ffe4b1','Index 低6位','VA[11:6]','#8799aa',focus);
+ }else{
+   o+=segment(indexStart,208,offsetStart-indexStart,58,'#ffe4b1','Index',`${L} bits`,'#8799aa',focus);
+ }
+ o+=segment(offsetStart,208,begin+w-offsetStart,58,'#d1ebde','Offset','6 bits');
+ if(focus)o+=r(indexStart,206,offsetStart-indexStart,62,'none',gold,3);
+ if(focus && mode==='A') o+=r(pg+1,207,2*bit-2,60,'none',violet,3.2);
+ if(focus && mode==='C'){
+   o+=r(indexStart+1,207,pg-indexStart-2,60,'none',vaOrange,3.4);
+   // Small same-address pointer: VA VPN low bits are included in VA Index.
+   const mid=indexStart+bit;
+   o+=path(`M${mid} 154 V207`,vaOrange,2.9,'stroke-dasharray="4 4"');
+ }
+ // TLB translator compact shape
+ o+=t(35,307,'TLB 地址转换',19,'#354b63',700);
+ o+=r(180,285,345,43,focus?'#e8f1fd':'#f8fafc',focus?blue:'#a9bac9',2);
+ o+=t(194,306,'VPN 01 / 02',19,focus?blue:'#33495f',700);
+ o+=arrow('M342 307 H385',blue,2.7);
+ o+=t(398,306,'PPN 0A',19,focus?blue:'#33495f',700);
+ if(focus)o+=t(548,306,'与 Cache 选 Set 同时开始',18,green,700);
+ // PhysAddr after TLB
+ o+=t(35,360,'翻译后的 Physical Address',19,'#354b63',700);
+ if(mode==='C'){
+   const x=pg-2*bit,mid=(x+pg)/2;
+   o+=segment(begin,374,x-begin,58,physical?'#d8e7fb':'#eef2f6','PPN 高18位','18 bits');
+   o+=r(x,374,pg-x,58,'#e9dff8',paPurple,physical?3.8:2.5);
+   o+=t(mid,396,'PPN',14,paPurple,800,'middle');
+   o+=t(mid,418,'低2',15,paPurple,800,'middle');
+ }else{
+   o+=segment(begin,374,pg-begin,58,physical?'#d8e7fb':'#eef2f6','PPN','20 bits');
+ }
+ o+=segment(pg,374,begin+w-pg,58,'#cce9da','Page Offset','12 bits');
+ if(physical)o+=t(864,361,'PA = 0x0000A000',18,blue,700,'end');
+ if(physical && mode==='A') {
+   const x=pg, mid=pg+bit;
+   o+=r(x+1,373,2*bit-2,61,'rgba(171,105,209,.12)',violet,3.5);
+   o+=r(x+1,473,2*bit-2,61,'rgba(171,105,209,.12)',violet,3.5);
+   o+=path(`M${mid} 435 V472`,violet,2.5,'stroke-dasharray="4 4"');
+   o+=t(mid+10,449,'Page Offset 高 2 位 [11:10] → Tag',15,violet,700);
+ }
+ // For C, the physical PPN low two bits are part of the *VIPT tag*.
+ // VA[13:12] is used to select a Set; PPN[1:0] is used to compare its Physical Tag.
+ // These bits do not have to be equal and must not be confused with a PA-derived Index.
+ if(mode==='C'){
+   o+=t(35,461,'VIPT：橙色 VA 选 Set；紫色 PA 比 Tag',19,'#354b63',700);
+   // This physical-tag source spans PA[31:12]: PPN high 18 bits + PPN low 2 bits.
+   // The Index below/next to it is *virtual* VA[11:6], NOT PA index bits.
+   const x=pg-2*bit,mid=(x+pg)/2;
+   o+=segment(begin,474,x-begin,58,physical?'#d8e7fb':'#eef2f6','Physical Tag','PPN 高18位','#8799aa',physical);
+   o+=r(x,474,pg-x,58,'#e9dff8',paPurple,physical?3.8:2.5);
+   o+=t(mid,495,'Tag',14,paPurple,800,'middle');
+   o+=t(mid,517,'低2',15,paPurple,800,'middle');
+   o+=segment(pg,474,offsetStart-pg,58,physical?'#ffe4b1':'#fff0d5','Index 低6位','VA[11:6]');
+   o+=segment(offsetStart,474,begin+w-offsetStart,58,'#d1ebde','Offset','6 bits');
+   // Gold outline encircles ALL 20 bits of Physical Tag, including the red low two.
+   if(physical){
+     o+=r(begin-1,472,pg-begin+2,62,'none',gold,3.3);
+     o+=path(`M${mid} 433 V472`,paPurple,2.9,'stroke-dasharray="4 4"');
+   }
+ }else{
+   // A/B retain the previous aligned physical-address partition diagram.
+   o+=t(35,461,'PA 的 Tag / Index / Offset 分位',19,'#354b63',700);
+   o+=segment(begin,474,indexStart-begin,58,physical?'#d8e7fb':'#eef2f6','Physical Tag',`${32-L-6} bits`,'#8799aa',physical);
+   o+=segment(indexStart,474,offsetStart-indexStart,58,physical?'#ffe4b1':'#fff0d5','Index',`${L} bits`);
+   o+=segment(offsetStart,474,begin+w-offsetStart,58,'#d1ebde','Offset','6 bits');
+   if(physical && mode==='B')o+=t(860,454,`Physical Tag = ${tagHex} · PA Index = ${hex(physicalIdx())}`,17,blue,700,'end');
+ }
+ // Highlight where the boundary-crossing bits go. Two large colored chips explain the source of actual VIPT physical tags.
+ o+=r(34,546,841,111,mode==='C'?'#fff8f5':'#f6fbf8',mode==='C'?'#e1aaaa':'#b9dbc8',1.6,'rx="3"');
+ o+=t(52,570,`${s.formula}`,22,mode==='C'?red:green,700);
+ const boxY=579,boxH=35;
+ if(mode==='A'){
+   o+=t(52,602,'VIPT Physical Tag =',19,'#24394f',700);
+   o+=r(271,boxY,210,boxH,'#d8e7fb',blue,2,'rx="3"');
+   o+=t(376,601,'PPN · 20 bits',18,'#173758',700,'middle');
+   o+=t(498,603,'+',23,'#20384b',800,'middle');
+   o+=r(518,boxY,252,boxH,'#f1d9f7',violet,2,'rx="3"');
+   o+=t(644,601,'Page Offset 高 2 bits',18,violet,700,'middle');
+   o+=t(793,603,'= 22b',19,green,800);
+   o+=t(52,636,'紫色标记：PA[11:10] 同时属于 Page Offset 和 Physical Tag，未被丢弃。',17,violet,700);
+ }else if(mode==='C'){
+   // Two separate provenance lanes: orange from VA, purple from PA (via TLB).
+   // Their address positions both read [13:12], but their VALUES are not interchangeable.
+   o+=r(52,578,103,27,'#fff0d6',vaOrange,2,'rx="3"');
+   o+=t(103,596,'VA[13:12]',17,vaOrange,800,'middle');
+   o+=path('M160 592 H194',vaOrange,2.7); o+='<polygon points="190,586 202,592 190,598" fill="'+vaOrange+'"/>';
+   o+=r(205,578,217,27,'#fff0d6',vaOrange,2,'rx="3"');
+   o+=t(313,596,'Virtual Index 高 2 位',17,vaOrange,800,'middle');
+   o+=t(441,596,'VA1=01₂、VA2=10₂',16,vaOrange,700);
+   o+=r(52,608,103,27,'#e9dff8',paPurple,2,'rx="3"');
+   o+=t(103,626,'PA[13:12]',17,paPurple,800,'middle');
+   o+=path('M160 622 H194',paPurple,2.7); o+='<polygon points="190,616 202,622 190,628" fill="'+paPurple+'"/>';
+   o+=r(205,608,217,27,'#e9dff8',paPurple,2,'rx="3"');
+   o+=t(313,626,'Physical Tag 低 2 位',17,paPurple,800,'middle');
+   o+=t(441,626,'PPN[1:0]=10₂',16,paPurple,700);
+   o+=t(52,650,'Tag = PPN 高18位 + 低2位 = 20b；位位置同为 [13:12]，但 VA、PA 的值不必相同。',15,'#33445b',700);
+ }else{
+   o+=t(52,605,'VIPT Physical Tag =',20,'#24394f',700);
+   o+=r(271,boxY,285,boxH,'#d8e7fb',blue,2,'rx="3"');
+   o+=t(414,601,'完整 PPN · 20 bits',18,'#173758',700,'middle');
+   o+=t(573,605,'= 20b',20,green,800);
+   o+=t(52,634,'Index + Block Offset 恰好覆盖 Page Offset；因此 Physical Tag 正好是完整 PPN。',17,green,700);
+ }
+ if(mode!=='C')o+=t(54,651,`Page 4KB · Line 64B · Direct-mapped · ${s.sets} Sets (${s.cap})`,13,'#50667b');
+ // right side headings and two compact input VA records
+ o+=t(933,39,'两个虚拟地址访问同一物理块',25,'#142d4c',700);
+ const chip=(y,num,va,id,color,pale)=>{
+  let out=r(930,y,532,49,pale,color,2,'rx="3"');
+  out+=r(939,y+10,60,29,color,color,1,'rx="3"');
+  out+=t(969,y+25,'VA'+num,18,'#fff',700,'middle');
+  out+=t(1012,y+25,hex(va,8),20,'#162c45',700);
+  out+=t(1210,y+25,`Index ${hex(id)}`,20,color,700);
+  return out;
+ };
+ o+=chip(65,1,va1,id1,blue,'#edf4ff')+chip(122,2,va2,id2,purple,'#f6f0fc');
+ if(mode==='C'){
+   o+=t(980,191,`橙色 VA → Index[7:0]：${hex(id1)} / ${hex(id2)}`,18,vaOrange,700);
+   o+=t(980,213,`紫色 PA → Physical Tag = 完整 PPN：${hex(tag())}`,18,paPurple,700);
+ }else{
+   o+=t(980,195,`TLB：两者均映射到 PA = ${hex(pa,8)}`,18,'#28634d',700);
+ }
+ // C uses two short parallel-path annotations; leave a little extra vertical space above its array.
+ const tx=962, ty=mode==='C'?253:233, cw=470,col=[88,62,125,195],rh=mode==='C'?31:34,rows=rowsFor();
+ o+=t(984,mode==='C'?239:218,`Cache（${s.sets} Sets）`,20,'#1f3348',700);
+ o+=r(tx,ty,cw,40,'#eaf0f6','#343f49',2);
+ const names=['Index','Valid',mode==='C'?'Tag (PPN)':'Physical Tag','Data'];let xc=tx;
+ for(let i=0;i<4;i++){o+=t(xc+col[i]/2,ty+20,names[i],i===2?17:18,'#1b2d44',700,'middle');xc+=col[i];if(i<3)o+=path(`M${xc} ${ty} V${ty+40+rows.length*rh}`,'#a4b1bd',1.2);}
+ rows.forEach((row,j)=>{
+  const y=ty+40+j*rh;const dots=row==='…',target=!dots&&(row===id1||row===id2);const fill=target?(loaded?(same?'#e4f5ea':row===id1?'#e6f0fd':'#f2eafb'):'#fff7df'):(j%2===0?'#fff':'#f9fafb');
+  o+=r(tx,y,cw,rh,fill,'#8e9eac',.85);
+  // keep vertical columns readable on top
+  let cc=tx;for(const width of col.slice(0,-1)){cc+=width;o+=path(`M${cc} ${y} V${y+rh}`,'#b2beca',.8);}
+  o+=t(tx+col[0]/2,y+rh/2,dots?'…':hex(row),19,'#203951',target?700:400,'middle');
+  o+=t(tx+col[0]+col[1]/2,y+rh/2,dots?'…':(target&&loaded?'1':'0'),19,'#203951',target?700:400,'middle');
+  o+=t(tx+col[0]+col[1]+col[2]/2,y+rh/2,dots?'…':(target&&loaded?tagHex:'—'),19,'#203951',target?700:400,'middle');
+  if(target){
+    let marker='';if(row===id1)marker+=`<tspan fill="${blue}">VA1</tspan>`;
+    if(row===id2)marker+=`<tspan fill="${purple}">${row===id1?' + ':''}VA2</tspan>`;
+    o+=`<text x="${tx+col[0]+col[1]+col[2]+14}" y="${y+rh/2}" font-size="19" font-weight="700" dominant-baseline="middle">${marker}</text>`;
+    if(phase>=2)o+=r(tx+1,y+1,cw-2,rh-2,'none',row===id1?blue:purple,2.5);
+  }else if(dots)o+=t(tx+col[0]+col[1]+col[2]+col[3]/2,y+rh/2,'…',20,'#647891',400,'middle');
+ });
+ o+=r(tx,ty,cw,40+rows.length*rh,'none','#333b45',2.4);
+ // Color guide: active arrows to target sets, no clutter from big architecture flowchart
+ if(phase>=2){
+  const targetY=target=>{const i=rows.indexOf(target);return ty+40+i*rh+rh/2;};
+  const yy1=targetY(id1),yy2=targetY(id2);
+  o+=arrow(`M946 93 H940 V${yy1} H958`,blue,3.0);
+  o+=arrow(`M950 148 H947 V${yy2} H958`,purple,3.0);
+ }
+ // memory location anchored at bottom
+ o+=t(984,mode==='C'?563:570,'Physical Memory',20,'#1f3348',700);
+ o+=r(962,mode==='C'?580:588,470,43,'#e3f4ea','#327b5e',2.5);
+ o+=t(980,mode==='C'?602:610,`PA ${hex(pa,8)}`,19,'#226b50',700);
+ o+=t(1250,mode==='C'?602:610,'X = 10',21,'#225a43',700);
+ if(phase===3)o+=t(1445,648,same?'同一个 Set，共用一条 Cache Line':'不同 Set，可能出现同义地址双副本',18,same?green:red,700,'end');
+ if(phase===0){o+=t(943,648,'选择一个实验，然后点击「下一步」',18,'#5e7186');}
+ $('scene').innerHTML=o;
+ document.querySelectorAll('[data-mode]').forEach(b=>{b.classList.toggle('active',b.dataset.mode===mode);b.setAttribute('aria-pressed',String(b.dataset.mode===mode));});
+ $('prevBtn').disabled=phase===0;
+ $('nextBtn').disabled=phase===3;
+ $('nextBtn').textContent=phase===3?'已完成':'下一步';
+ const titles=[
+  '观察两条边界：Page Offset 的起点与 Cache Index 的起点',
+  'TLB 翻译完整 VPN；Cache 同时取得 VA 的 Index',
+  'PPN 与 Page Offset 拼接为 PA；VA Index 选中 Cache Set',
+  '等待 TLB 返回后，用 Physical Tag 完成命中比较'
+ ];
+ $('stepText').textContent = `${phase+1}/4  ${titles[phase]}`;
+ $('tinyNote').textContent=phase===3 ? (mode==='C' ? '橙色 VA[13:12] → Index 高2位；紫色 PA[13:12] → Tag 低2位。位位置相同，值未必相同。' : `VA1 与 VA2 的虚拟 Index 均为 ${hex(id1)}；物理 Tag 匹配，命中同一份数据。`) :
+ phase===2 ? `VA Index：VA1=${hex(id1)}，VA2=${hex(id2)}。TLB 输出完整 PPN=0x0A；注意下方红／紫色框。` :
+ phase===1 ? '同一组 VA 信号可以分别送往 TLB 和 Cache，互不需要等待。' :
+ '分页的 VPN / Page Offset 与 Cache 的 Index / Offset 是两种独立的位划分。';
+}
+function change(m){mode=m;phase=0;draw();}
+function advance(){const max=mode==='D'?4:3;if(phase<max){phase++;draw();}}
+$('nextBtn').addEventListener('click',advance);
+$('prevBtn').addEventListener('click',()=>{if(phase>0)phase--;draw();});
+$('resetBtn').addEventListener('click',()=>{phase=0;draw();});
+$('fitBtn').addEventListener('click',()=>{$('scene').style.width='100%';$('scene').style.height='100%';$('scene').setAttribute('preserveAspectRatio','xMidYMid meet');});
+document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>change(b.dataset.mode)));
+window.addEventListener('keydown',e=>{if(e.key==='ArrowRight'){e.preventDefault();advance();}if(e.key==='ArrowLeft'){e.preventDefault();if(phase>0)phase--;draw();}});
+draw();
+})();
+
+</script>
+</body>
+</html>

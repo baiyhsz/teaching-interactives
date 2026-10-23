@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VIVT Cache — Aliasing</title>
+<style>
+:root{
+  --bg:#fff; --ink:#10233d; --muted:#6b7d92; --line:#bfcddd; --soft:#f3f6fa;
+  --blue:#316dca; --blue2:#eaf3ff; --purple:#7d5bc2; --purple2:#f1ebff; --green:#1c7a60; --green2:#ebf8f2;
+  --amber:#b97812; --amber2:#fff2dc; --red:#b93f3f; --red2:#fff2f2; --hilite:#d9d9d9;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+body{font-size:18px;line-height:1.3}
+.fitViewport{position:fixed;inset:0;overflow:hidden;background:#fff}
+button,input{font:inherit} button{cursor:pointer}
+.app{position:absolute;top:0;left:0;width:1600px;height:auto;display:grid;grid-template-rows:auto auto auto;gap:10px;padding:12px 14px 10px;transform-origin:top left;will-change:transform}
+.top{display:flex;align-items:baseline;gap:22px;justify-content:flex-start;white-space:nowrap}
+.top h1{margin:0;font-size:38px;line-height:1.08}.top p{margin:0;color:#56708d;font-size:23px}
+.toolbar{display:flex;align-items:stretch;gap:16px;justify-content:space-between;min-width:0}
+.scenarios{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;min-width:0;flex:1}
+.fitBtn{border:2px solid #b2c9e6;border-radius:10px;background:#fff;color:#244f84;font-weight:800;font-size:20px;padding:10px 13px;white-space:nowrap}.fitBtn:hover{background:#edf4ff}
+.scenario{border:2px solid var(--line);border-radius:12px;background:#fff;padding:9px 12px;text-align:left}
+.scenario[aria-pressed="true"]{border-color:var(--blue);background:var(--blue2)}
+.scenario .t1{font-size:20px;font-weight:800}.scenario .t2{font-size:15px;color:var(--muted);margin-top:2px}
+.main{display:grid;grid-template-columns:minmax(0,28fr) minmax(0,40fr) minmax(0,32fr);gap:12px;min-height:0;align-items:stretch}
+.panel{border:2px solid var(--line);border-radius:14px;background:#fff;display:flex;flex-direction:column;min-height:0}
+.panel h2{margin:0;padding:9px 12px;background:var(--soft);border-bottom:2px solid #d8e2ee;font-size:24px}
+.content{padding:10px 12px;display:flex;flex-direction:column;gap:10px;min-height:0}
+.request{border-radius:12px;background:#17345d;color:#fff;padding:12px 14px;display:flex;align-items:center;justify-content:space-between}
+.request .a{font-size:13px;opacity:.9;letter-spacing:.04em}.request .b{font-size:31px;font-weight:900;margin-top:2px}.request .state{font-size:21px;font-weight:900;padding:8px 14px;border-radius:10px;background:rgba(255,255,255,.16)}
+.card{border:2px solid var(--line);border-radius:12px;padding:10px 12px;background:#fff}.card.v1{background:var(--blue2);border-color:#9dbcf0}.card.v2{background:var(--purple2);border-color:#c9b5f2}
+.card .name{display:flex;justify-content:space-between;align-items:center;font-size:22px;font-weight:800}.card .page{font-size:15px;color:#536780}
+.card .addr{font-family:Consolas,monospace;font-size:34px;font-weight:900;margin:6px 0}
+.parts{display:grid;grid-template-columns:1fr 1fr .8fr;gap:7px}.part{border:2px solid var(--line);border-radius:10px;text-align:center;background:#fff;padding:6px}.part .l{font-size:13px;color:var(--muted)} .part .v{font-family:Consolas,monospace;font-size:23px;font-weight:800}.part.tag{background:#eef4ff;border-color:#c7dafb}.part.index{background:var(--amber2);border-color:#e5c58d}
+.pt{border:2px solid var(--line);border-radius:12px;overflow:hidden}.pt .h,.pt .r{display:grid;grid-template-columns:1.2fr 32px 1fr;align-items:center}.pt .h{background:var(--soft);font-size:17px;font-weight:800;border-bottom:2px solid #d8e2ee}.pt .h div,.pt .r div{padding:7px 6px;text-align:center}.pt .r{font-family:Consolas,monospace;font-size:21px;border-top:1px solid #e4eaf2}.pt .r.active{background:#eef9f4}
+.small{font-size:15px;color:var(--muted)}
+/* 教学所需的固定参数和状态位图例 */
+.cachePanelTitle{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.cachePanelTitle .cacheTitle{font-size:24px;font-weight:800}
+.cacheConfig{font-size:16px;color:#3f5c80;font-weight:750;white-space:nowrap}
+.vdLegend{margin-top:auto;background:#f7f9fc;border:2px solid #dce5ef;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.vdLegend .heading{font-weight:800;font-size:17px;color:#354d6c}
+.vdItem{display:flex;align-items:center;gap:10px;font-size:17px;color:#263d57;line-height:1.35}
+.vdCode{flex:none;min-width:42px;text-align:center;background:#eaf1fa;border-radius:6px;padding:2px 6px;font-family:Consolas,monospace;font-weight:800}
+.vdCode.dirty{background:#fff1d8;color:#966016}
+.lineFormat{display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap;border:1px solid #d8e2ef;border-radius:8px;padding:6px 10px;background:#f8fafc;font-size:16px;font-weight:700;color:#4a6079}
+.lineFormat b{font-weight:900;color:#243e5d}
+.memoryConfig{padding:9px 11px;border:2px solid #c7dfd1;background:#eff9f3;border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:8px;color:#1d6b53;font-size:17px;font-weight:800}
+.memoryConfig span:last-child{font-size:15px;color:#4c7869}
+.addrCell small{min-height:18px}
+
+.addrbar{display:grid;grid-template-columns:1fr 1fr .8fr;gap:7px}.addrCell{border:2px solid var(--line);border-radius:10px;text-align:center;padding:8px}.addrCell small{display:block;font-size:13px;color:var(--muted)} .addrCell b{display:block;font-size:21px}.addrCell.index{background:var(--amber2);border-color:#e5c58d}.addrCell.offset{background:var(--green2);border-color:#b7dece}
+.gridbox{border:2px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}
+#cacheTable,#memTable{border:4px solid #2f2f2f;border-radius:0}
+.cacheHeadDM,.cacheRowDM{display:grid;grid-template-columns:92px 86px 96px 1fr}
+.cacheHeadSA,.cacheRowSA{display:grid;grid-template-columns:92px 1fr 1fr}
+.cacheHeadDM,.cacheHeadSA{background:var(--soft);font-size:18px;font-weight:800;border-bottom:2px solid #d8e2ee}
+.cacheHeadDM>div,.cacheHeadSA>div{padding:8px 6px;text-align:center;border-right:1px solid #d8e2ee}.cacheHeadDM>div:last-child,.cacheHeadSA>div:last-child{border-right:none}.cacheHeadDM small,.cacheHeadSA small{font-size:14px;color:#647990;font-weight:700}
+.cacheRowDM,.cacheRowSA{min-height:51px;border-top:1px solid #e6ebf2}.cacheRowDM .c,.cacheRowSA .c{padding:5px 6px;border-right:1px solid #e6ebf2;display:flex;align-items:center;justify-content:center}.cacheRowDM .c:last-child,.cacheRowSA .c:last-child{border-right:none}
+.idxCell{font-family:Consolas,monospace;font-size:24px;font-weight:900;background:#fafbfd;flex-direction:column;gap:2px}.idxCell.active{background:var(--hilite)}
+.vCell,.tagCell{font-family:Consolas,monospace;font-size:22px}.dataCell{justify-content:flex-start !important;padding:4px 8px !important}
+.lineMini{width:100%;height:38px;border:2px solid #d6e1ee;border-radius:8px;display:flex;align-items:center;justify-content:space-between;padding:0 10px;background:#fff}
+.lineMini.v1{background:var(--blue2);border-color:#9dbcf0}.lineMini.v2{background:var(--purple2);border-color:#c9b5f2}.lineMini.empty{background:#fafbfd;color:#8797a8}.lineMini.target{outline:4px solid #f1c56c;outline-offset:-2px}
+.lineMini .left{font-size:17px;font-weight:800}.lineMini .right{font-family:Consolas,monospace;font-size:27px;font-weight:900}.lineMini .sub{font-size:14px;color:var(--muted);font-weight:700}
+.mapMarks{display:flex;gap:3px;flex-wrap:wrap;justify-content:center;padding:0}.mark{display:inline-block;border-radius:999px;padding:0 4px;font-size:12px;font-weight:800;border:2px solid #c9d5e4;background:#fff}.mark.v1{background:var(--blue2);border-color:#9dbcf0;color:#2f62b0}.mark.v2{background:var(--purple2);border-color:#c9b5f2;color:#7554ad}
+.ellipsisRow{display:grid;place-items:center;height:32px;background:#fafbfd;color:#7f91a6;font-size:24px;font-weight:900;letter-spacing:4px;border-top:1px solid #e6ebf2}
+.memHead,.memRow{display:grid;grid-template-columns:84px 1fr}
+.memHead{background:var(--soft);font-size:18px;font-weight:800;border-bottom:2px solid #d8e2ee}.memHead>div,.memRow>div{padding:8px 8px;text-align:center;border-right:1px solid #d8e2ee}.memHead>div:last-child,.memRow>div:last-child{border-right:none}
+.memRow{min-height:48px;border-top:1px solid #e6ebf2}.memIdx{font-family:Consolas,monospace;font-size:23px;font-weight:900;background:#fafbfd;display:flex;align-items:center;justify-content:center}.memIdx.active{background:var(--hilite)}
+.memData{display:flex;align-items:center;padding:5px 8px !important}.memBlock{width:100%;min-height:40px;border:2px solid #d6e1ee;border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:space-between;padding:4px 10px;gap:8px}.memBlock.target{background:#ddf3e8;border-color:#79c7a7}.memBlock.active{outline:4px solid #f1c56c;outline-offset:-2px}.memBlock .left{font-size:17px;font-weight:800}.memBlock .right{font-family:Consolas,monospace;font-size:27px;font-weight:900}.memBlock .sub{font-size:14px;color:var(--muted);font-weight:700}
+.statusGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.metric{border:2px solid var(--line);border-radius:12px;padding:10px}.metric .m1{font-size:15px;color:var(--muted);font-weight:700}.metric .m2{font-family:Consolas,monospace;font-size:33px;font-weight:900;margin-top:3px}
+.statusBar{border:2px solid var(--line);border-radius:12px;padding:10px 12px;background:#f8fbff}.statusBar.good{background:#eef9f4;border-color:#c9e5d9}.statusBar.bad{background:var(--red2);border-color:#efc1c1}.statusTitle{font-size:24px;font-weight:900}.statusTitle.good{color:var(--green)}.statusTitle.bad{color:var(--red)}.statusDetail{font-size:16px;color:var(--muted);margin-top:3px}
+.controls{display:flex;gap:9px;justify-content:flex-end;align-items:center;flex:none;white-space:nowrap}
+.btn{border:2px solid #b7cce6;border-radius:10px;background:#fff;padding:10px 16px;font-size:20px;font-weight:800;color:#2f4d72}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+@media (max-height: 820px){.app{padding:10px 12px 8px}.top h1{font-size:36px}.top p{font-size:21px}.request .b{font-size:28px}.card .addr{font-size:30px}.pt .r,.part .v,.metric .m2{font-size:21px}.btn{font-size:19px;padding:9px 13px}.fitBtn{font-size:19px;padding:9px 12px}.statusTitle{font-size:22px}}
+</style>
+</head>
+<body>
+<div class="fitViewport" id="fitViewport"><div class="app" id="teachingStage">
+  <div class="top">
+    <h1>VIVT Cache</h1>
+    <p>Aliasing，两个虚拟地址访问同一个物理页</p>
+  </div>
+
+  <div class="toolbar">
+    <div class="scenarios">
+      <button class="scenario" data-mode="A" aria-pressed="true"><div class="t1">A &nbsp; 不同 Index</div><div class="t2">Direct-mapped</div></button>
+      <button class="scenario" data-mode="B" aria-pressed="false"><div class="t1">B &nbsp; 相同 Index</div><div class="t2">Direct-mapped</div></button>
+      <button class="scenario" data-mode="C" aria-pressed="false"><div class="t1">C &nbsp; 相同 Index</div><div class="t2">2-way Set Associative</div></button>
+    </div>
+    <div class="controls">
+      <button class="btn" id="prevBtn">上一步</button>
+      <button class="btn primary" id="nextBtn">下一步</button>
+      <button class="btn" id="resetBtn">重置</button>
+      <button class="fitBtn" id="fitBtn" title="将完整课件缩放到当前浏览器可用区域">适应窗口</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <section class="panel">
+      <h2>虚拟地址与页表</h2>
+      <div class="content">
+        <div class="request"><div><div class="a">CURRENT REQUEST</div><div class="b" id="reqText">READ VA1</div></div><div class="state" id="reqState">READY</div></div>
+        <div class="card v1" id="va1card"></div>
+        <div class="card v2" id="va2card"></div>
+        <div class="pt"><div class="h"><div>VPN</div><div></div><div>PPN</div></div><div id="ptRows"></div></div>
+        <div class="small" id="leftHint"></div>
+        <div class="vdLegend" aria-label="Cache 状态位说明">
+          <div class="heading">Cache 状态位</div>
+          <div class="vdItem"><span class="vdCode">V</span><span>Valid（有效位）</span></div>
+          <div class="vdItem"><span class="vdCode dirty">D</span><span>Dirty（脏位）</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 class="cachePanelTitle"><span class="cacheTitle">Cache</span><span class="cacheConfig" id="cacheConfig">64KB · Direct-mapped · 1024 Sets · 64B/Line</span></h2>
+      <div class="content">
+        <div class="addrbar"><div class="addrCell"><small>Tag · 16 bits [31:16]</small><b id="tagBits">0x00</b></div><div class="addrCell index"><small>Index · 10 bits [15:6]</small><b id="indexBits">0x040</b></div><div class="addrCell offset"><small>Offset · 6 bits [5:0]</small><b>0x00</b></div></div>
+        <div class="gridbox" id="cacheTable"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Memory</h2>
+      <div class="content">
+        <div class="memoryConfig"><span>Physical Page 0xA000</span><span>4KB = 64 Blocks × 64B</span></div>
+        <div class="gridbox" id="memTable"></div>
+        <div class="statusGrid"><div class="metric"><div class="m1">DRAM 中 X</div><div class="m2" id="dramX">10</div></div><div class="metric"><div class="m1">最近写入的 X</div><div class="m2" id="latestX">10</div></div></div>
+        <div class="statusBar" id="statusBox"><div class="statusTitle" id="statusTitle">从虚拟地址开始，看它落到哪个 Cache 行</div><div class="statusDetail" id="statusDetail">先执行“下一步”。</div></div>
+      </div>
+    </section>
+  </div>
+
+</div></div>
+
+<script>
+
+const configs={
+  A:{mode:'A',ways:1,va1:0x01000,va2:0x02000,tip:'两个副本可同时存在。'},
+  B:{mode:'B',ways:1,va1:0x01000,va2:0x11000,tip:'同一个 Set 只能留下一个副本。'},
+  C:{mode:'C',ways:2,va1:0x01000,va2:0x11000,tip:'同一个 Set 中的两个 Way 仍可容纳两个副本。'}
+};
+const stepsScript=[
+  {op:'read',alias:1,label:'1. READ VA₁',short:'装入 VA₁'},
+  {op:'read',alias:2,label:'2. READ VA₂',short:'再访问 VA₂'},
+  {op:'write',alias:1,value:20,label:'3. WRITE VA₁=20',short:'只改 VA₁ 副本'},
+  {op:'read',alias:2,label:'4. READ VA₂',short:'看最终结果'}
+];
+let mode='A',cache=null,mem=10,latest=10,stepIndex=0,last=null,logText='',lruClock=0;
+function $(id){return document.getElementById(id)}
+function curr(){return configs[mode]}
+function hex(n,w=3){return '0x'+n.toString(16).toUpperCase().padStart(w,'0')}
+function vpn(va){return va>>>12}
+function idx(va){return (va>>>6)&0x3FF}
+function tag(va){return va>>>16}
+function initCache(){cache=new Map()}
+function getSet(i){if(!cache.has(i))cache.set(i,Array.from({length:curr().ways},()=>null));return cache.get(i)}
+function name(alias){return alias===1?'VA₁':'VA₂'}
+function resetState(){initCache();mem=10;latest=10;stepIndex=0;last=null;logText='还没有操作。点击“下一步”。';lruClock=0}
+function reset(){resetState();render()}
+function chooseMode(m){mode=m;document.querySelectorAll('.scenario').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.mode===m)));reset()}
+function access(op,alias,value,skipRender=false){
+  const va=alias===1?curr().va1:curr().va2;
+  const index=idx(va), tg=tag(va), set=getSet(index);
+  lruClock++;
+  let hitWay=set.findIndex(line=>line&&line.tag===tg), hit=hitWay!==-1, chosenWay=hitWay, writeback=false, stale=false, evicted=null;
+  if(!hit){
+    chosenWay=set.findIndex(line=>line===null);
+    if(chosenWay===-1){
+      chosenWay=0;
+      for(let i=1;i<set.length;i++) if(set[i].used<set[chosenWay].used) chosenWay=i;
+      evicted=set[chosenWay];
+      if(evicted&&evicted.dirty){mem=evicted.value; writeback=true;}
+    }
+    set[chosenWay]={tag:tg, alias, value:mem, dirty:false, used:lruClock};
+  }
+  const line=set[chosenWay];
+  line.used=lruClock;
+  let result;
+  if(op==='write'){result=Number.isFinite(value)?value:20; line.value=result; line.dirty=true; latest=result;}
+  else {result=line.value; stale=result!==latest;}
+  last={op,alias,va,index,tag:tg,way:chosenWay,hit,result,stale,writeback,evicted};
+  let tail=hit?'HIT':'MISS'; if(writeback) tail+='，先写回'; if(stale) tail+='，旧值';
+  logText=`${op==='read'?'READ':'WRITE'} ${name(alias)} ｜ Set=${hex(index)} Way=${chosenWay} ｜ ${tail} ｜ X=${result}`;
+  if(!skipRender)render();
+}
+function next(){if(stepIndex>=stepsScript.length)return; const s=stepsScript[stepIndex++]; access(s.op,s.alias,s.value)}
+// 完整回放到上一状态：Cache 替换、Dirty 位和 DRAM 写回都随之回退。
+function previous(){
+  if(stepIndex===0)return;
+  const target=stepIndex-1;
+  resetState();
+  for(let i=0;i<target;i++){
+    const s=stepsScript[i];
+    stepIndex++;
+    access(s.op,s.alias,s.value,true);
+  }
+  render();
+}
+function renderVACard(alias){
+  const va=alias===1?curr().va1:curr().va2;
+  $(alias===1?'va1card':'va2card').innerHTML=`<div class="name">${name(alias)} <span class="page">Page ${hex(vpn(va),2)}</span></div><div class="addr">${hex(va,5)}</div><div class="parts"><div class="part tag"><div class="l">Tag</div><div class="v">${hex(tag(va),2)}</div></div><div class="part index"><div class="l">Index</div><div class="v">${hex(idx(va))}</div></div><div class="part"><div class="l">Offset</div><div class="v">0x00</div></div></div>`;
+}
+function renderPT(){
+  const v1=curr().va1,v2=curr().va2;
+  $('ptRows').innerHTML=`<div class="r ${last?.alias===1?'active':''}"><div>VPN1 = ${hex(vpn(v1),2)}</div><div>→</div><div>PPN = 0xA</div></div><div class="r ${last?.alias===2?'active':''}"><div>VPN2 = ${hex(vpn(v2),2)}</div><div>→</div><div>PPN = 0xA</div></div>`;
+  $('leftHint').textContent = idx(v1)===idx(v2)?`VA₁ → Set ${hex(idx(v1))}，VA₂ → Set ${hex(idx(v2))}`:`VA₁ → Set ${hex(idx(v1))}，VA₂ → Set ${hex(idx(v2))}`;
+}
+function relevantSets(){const a=idx(curr().va1),b=idx(curr().va2); return a===b?[a]:[a,b]}
+function setMarks(index){const a=idx(curr().va1), b=idx(curr().va2); let h=''; if(index===a) h += '<span class="mark v1">VA1</span>'; if(index===b) h += '<span class="mark v2">VA2</span>'; return h ? `<div class="mapMarks">${h}</div>` : ''; }
+function sharedMemMarks(){ return '<div class="mapMarks"><span class="mark v1">VA1</span><span class="mark v2">VA2</span></div>'; }
+function lineMini(line,isTarget){
+  if(!line) return `<div class="lineMini empty"><div><div class="left">EMPTY</div></div><div class="right">--</div></div>`;
+  const cls=line.alias===1?'v1':'v2';
+  return `<div class="lineMini ${cls} ${isTarget?'target':''}"><div><div class="left">${name(line.alias)} · Tag ${hex(line.tag,2)}</div><div class="sub">V=1 &nbsp; D=${line.dirty?1:0}</div></div><div class="right">X=${line.value}</div></div>`;
+}
+function cacheDMRow(index){
+  if(index==='…') return `<div class="cacheRowDM"><div class="c idxCell">…</div><div class="c vCell">…</div><div class="c tagCell">…</div><div class="c dataCell"><span style="font-size:24px;color:#7f91a6">…</span></div></div>`;
+  const line=getSet(index)[0];
+  const active=last&&last.index===index;
+  return `<div class="cacheRowDM"><div class="c idxCell ${active?'active':''}">${hex(index)}${setMarks(index)}</div><div class="c vCell">${line?1:0}</div><div class="c tagCell">${line?hex(line.tag,2):'--'}</div><div class="c dataCell">${lineMini(line,active)}</div></div>`;
+}
+function cacheSARow(index){
+  if(index==='…') return `<div class="cacheRowSA"><div class="c idxCell">…</div><div class="c"><span style="font-size:24px;color:#7f91a6">…</span></div><div class="c"><span style="font-size:24px;color:#7f91a6">…</span></div></div>`;
+  const lines=getSet(index); const active=last&&last.index===index;
+  return `<div class="cacheRowSA"><div class="c idxCell ${active?'active':''}">${hex(index)}${setMarks(index)}</div><div class="c">${lineMini(lines[0],active&&last&&last.way===0)}</div><div class="c">${lineMini(lines[1],active&&last&&last.way===1)}</div></div>`;
+}
+function renderCache(){
+  const c=curr();
+  $('cacheConfig').textContent=`${c.ways===1?'64KB · Direct-mapped':'128KB · 2-way'} · 1024 Sets · 64B/Line`;
+  $('tagBits').textContent=last?hex(last.tag,2):hex(tag(curr().va1),2);
+  $('indexBits').textContent=last?hex(last.index):hex(idx(curr().va1));
+  const sets=relevantSets();
+  let rows=[];
+  if(sets.length===2){rows=[0,1,'…',sets[0],'…',sets[1],'…',1023];}
+  else {rows=[0,1,'…',sets[0],'…',1022,1023];}
+  // 保留每处省略号，同时确保不同 Index 的两个目标行都显示。
+  rows=rows.filter((v,i)=>v==='…'||rows.indexOf(v)===i);
+  let html='';
+  if(curr().ways===1){
+    html+=`<div class="cacheHeadDM"><div>Index<br><small>10 bits</small></div><div>Valid<br><small>1 bit</small></div><div>Tag<br><small>16 bits</small></div><div>Data<br><small>512 bits</small></div></div>`;
+    for(const r of rows) html+=cacheDMRow(r);
+  } else {
+    html+=`<div class="cacheHeadSA"><div>Index<br><small>10 bits</small></div><div>Way 0</div><div>Way 1</div></div>`;
+    for(const r of rows) html+=cacheSARow(r);
+  }
+  $('cacheTable').innerHTML=html;
+}
+function memRow(idxLabel,target=false,active=false,showX=false){
+  const marks = target ? sharedMemMarks() : '';
+  return `<div class="memRow"><div class="memIdx ${active?'active':''}">${idxLabel}</div><div class="memData">${idxLabel==='…'?'<span style="font-size:24px;color:#7f91a6">…</span>':`<div style="width:100%"><div class="memBlock ${target?'target':''} ${active?'active':''}"><div><div class="left">Block ${idxLabel}</div><div class="sub">64B</div></div><div class="right">${showX?'X='+mem:'--'}</div></div>${marks}</div>`}</div></div>`;
+}
+function renderMem(){
+  let html=`<div class="memHead"><div>Addr</div><div>Data</div></div>`;
+  html+=memRow('0',true,last&&!last.hit,true);
+  html+=memRow('1');
+  html+=memRow('2');
+  html+=memRow('…');
+  html+=memRow('61');
+  html+=memRow('62');
+  html+=memRow('63');
+  $('memTable').innerHTML=html;
+  $('dramX').textContent=mem;
+  $('latestX').textContent=latest;
+}
+function renderStatus(){
+  $('reqText').textContent=last?`${last.op.toUpperCase()} VA${last.alias}`:'READ VA1';
+  $('reqState').textContent=!last?'READY':(last.stale?'STALE':(last.hit?'HIT':'MISS'));
+  const box=$('statusBox'), title=$('statusTitle'), detail=$('statusDetail');
+  box.className='statusBar'; title.className='statusTitle';
+  if(!last){title.textContent='从虚拟地址开始，看它落到哪个 Cache 行'; detail.textContent='';}
+  else if(last.op==='write'){box.classList.add('good'); title.textContent=`${name(last.alias)} 写入 X=${last.result}`; title.classList.add('good'); detail.textContent='write-back';}
+  else if(last.stale){box.classList.add('bad'); title.textContent=`${name(last.alias)} 读到旧值 X=${last.result}`; title.classList.add('bad'); detail.textContent=curr().tip;}
+  else if(last.writeback){box.classList.add('good'); title.textContent=`替换并写回后，读到 X=${last.result}`; title.classList.add('good'); detail.textContent=curr().tip;}
+  else {title.textContent=`${name(last.alias)} 读到 X=${last.result}`; detail.textContent=curr().tip;}
+}
+function renderNavigation(){
+  $('prevBtn').disabled=stepIndex===0;
+  $('nextBtn').disabled=stepIndex>=stepsScript.length;
+  $('nextBtn').title=stepIndex<stepsScript.length?stepsScript[stepIndex].label:'当前实验已结束';
+}
+function render(){renderVACard(1); renderVACard(2); renderPT(); renderCache(); renderMem(); renderStatus(); renderNavigation();}
+document.querySelectorAll('.scenario').forEach(b=>b.addEventListener('click',()=>chooseMode(b.dataset.mode)));
+$('prevBtn').addEventListener('click',previous);
+$('nextBtn').addEventListener('click',next);
+$('resetBtn').addEventListener('click',reset);
+// 页面保持 Edge 100% 浏览器缩放不变，仅将教学画布等比例缩放至可视区域。
+const stage=document.getElementById('teachingStage');
+let fitScheduled=false;
+function fitToWindow(){
+  const margin=12;
+  const availableW=Math.max(250,document.documentElement.clientWidth-margin*2);
+  const availableH=Math.max(220,document.documentElement.clientHeight-margin*2);
+  const contentW=stage.scrollWidth;
+  const contentH=stage.scrollHeight;
+  if(!contentW||!contentH)return;
+  const scale=Math.min(availableW/contentW,availableH/contentH,1.4);
+  const left=Math.max(0,Math.round((document.documentElement.clientWidth-contentW*scale)/2));
+  const top=Math.max(0,Math.round((document.documentElement.clientHeight-contentH*scale)/2));
+  stage.style.transform=`translate(${left}px,${top}px) scale(${scale})`;
+  document.getElementById('fitBtn').title=`适应窗口，当前页面缩放 ${Math.round(scale*100)}%`;
+}
+function scheduleFit(){
+  if(fitScheduled)return;
+  fitScheduled=true;
+  requestAnimationFrame(()=>{fitScheduled=false;fitToWindow()});
+}
+document.getElementById('fitBtn').addEventListener('click',fitToWindow);
+window.addEventListener('resize',scheduleFit);
+if(window.visualViewport)window.visualViewport.addEventListener('resize',scheduleFit);
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(scheduleFit);
+new ResizeObserver(scheduleFit).observe(stage);
+reset();
+scheduleFit();
+</script>
+</body>
+</html>
